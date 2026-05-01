@@ -353,11 +353,10 @@ class Stac:
             np.array(kp_data),
         )
 
-    @jaxtyped(typechecker=beartype)
     def ik_only(
         self,
         kp_data: Float[Array, "n_frames n_keypoints_xyz"],
-        offsets: Float[Array, "n_keypoints 3"],
+        offsets: np.ndarray,
     ) -> io.StacData:
         """Run inverse kinematics only, using pre-fitted offsets.
 
@@ -567,12 +566,11 @@ class Stac:
         ]
         return render_mj_model, keypoint_site_idxs
 
-    @jaxtyped(typechecker=beartype)
     def render(
         self,
-        qposes: Float[Array, "n_frames n_qpos"],
-        kp_data: Float[Array, "n_frames n_keypoints_xyz"],
-        offsets: Float[Array, "n_keypoints 3"],
+        qposes: np.ndarray,
+        kp_data: np.ndarray,
+        offsets: np.ndarray,
         n_frames: int,
         save_path: str | Path,
         start_frame: int = 0,

@@ -68,7 +68,7 @@ def _q_opt(
     q_solver: ProjectedGradient,
     mjx_model: mjx.Model,
     mjx_data: mjx.Data,
-    marker_ref_arr: Float[Array, "n_keypoints_xyz n_frames"],
+    marker_ref_arr: Float[Array, " n_keypoints_xyz"],
     qs_to_opt: Bool[Array, " n_qpos"],
     kps_to_opt: Bool[Array, " n_keypoints_xyz"],
     q0: Float[Array, " n_qpos"],
@@ -83,7 +83,7 @@ def _q_opt(
             hyperparams_proj=jp.array((lb, ub)),
             mjx_model=mjx_model,
             mjx_data=mjx_data,
-            kp_data=marker_ref_arr.T,
+            kp_data=marker_ref_arr,
             qs_to_opt=qs_to_opt,
             kps_to_opt=kps_to_opt,
             initial_q=q0,
@@ -195,7 +195,7 @@ class StacCore:
         self,
         mjx_model: mjx.Model,
         mjx_data: mjx.Data,
-        marker_ref_arr: Float[Array, "n_keypoints_xyz n_frames"],
+        marker_ref_arr: Float[Array, " n_keypoints_xyz"],
         qs_to_opt: Bool[Array, " n_qpos"],
         kps_to_opt: Bool[Array, " n_keypoints_xyz"],
         q0: Float[Array, " n_qpos"],
@@ -210,7 +210,7 @@ class StacCore:
         Args:
             mjx_model: MJX model.
             mjx_data: MJX data.
-            marker_ref_arr: Marker reference positions (transposed layout).
+            marker_ref_arr: Flattened marker reference positions for a single frame.
             qs_to_opt: Mask selecting which joints to optimize.
             kps_to_opt: Mask selecting which keypoints contribute to loss.
             q0: Initial joint angles.
