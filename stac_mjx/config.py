@@ -55,6 +55,9 @@ class StacConfig:
     n_frames_per_clip: int  # Number of frames per IK chunk
     mujoco: MujocoConfig  # Configuration for Mujoco
     q_opt: "QOptConfig" = field(default_factory=lambda: QOptConfig())
+    diagnostics: "DiagnosticsConfig" = field(
+        default_factory=lambda: DiagnosticsConfig()
+    )
 
 
 @dataclass
@@ -68,6 +71,59 @@ class QOptConfig:
     coarse_init_max_frames: int = 16
     calibration_max_iterations: int = 150
     ik_max_iterations: int = 150
+
+
+@dataclass
+class DiagnosticLimitConfig:
+    """Warn/critical thresholds for one diagnostic metric."""
+
+    warn: float | None = None
+    critical: float | None = None
+
+
+@dataclass
+class DiagnosticThresholdsConfig:
+    """Default diagnostic thresholds in human-readable output units."""
+
+    marker_rmse_mm: DiagnosticLimitConfig = field(
+        default_factory=lambda: DiagnosticLimitConfig(warn=10.0, critical=25.0)
+    )
+    root_pos_step_mm: DiagnosticLimitConfig = field(
+        default_factory=lambda: DiagnosticLimitConfig(warn=6.0, critical=15.0)
+    )
+    root_geodesic_step_deg: DiagnosticLimitConfig = field(
+        default_factory=lambda: DiagnosticLimitConfig(warn=4.0, critical=12.0)
+    )
+    boundary_root_pos_step_mm: DiagnosticLimitConfig = field(
+        default_factory=lambda: DiagnosticLimitConfig(warn=8.0, critical=15.0)
+    )
+    boundary_root_geodesic_step_deg: DiagnosticLimitConfig = field(
+        default_factory=lambda: DiagnosticLimitConfig(warn=6.0, critical=12.0)
+    )
+    qpos_step_rms: DiagnosticLimitConfig = field(
+        default_factory=DiagnosticLimitConfig
+    )
+    qpos_step_max_abs: DiagnosticLimitConfig = field(
+        default_factory=DiagnosticLimitConfig
+    )
+    qvel_max_abs: DiagnosticLimitConfig = field(default_factory=DiagnosticLimitConfig)
+
+
+@dataclass
+class DiagnosticsConfig:
+    """Post-run diagnostic output settings."""
+
+    enabled: bool = True
+    top_n_events: int = 50
+    render_overlay: bool = False
+    overlay_path: str | None = None
+    overlay_n_frames: int | None = None
+    overlay_start_frame: int = 0
+    overlay_height: int = 480
+    overlay_width: int = 640
+    thresholds: DiagnosticThresholdsConfig = field(
+        default_factory=DiagnosticThresholdsConfig
+    )
 
 
 @dataclass

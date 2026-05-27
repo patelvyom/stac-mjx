@@ -26,6 +26,7 @@ dependencies = [
     "ipykernel",
     "hydra-core",
     "imageio[ffmpeg]",
+    "Pillow",
     "h5py",
     "flax",
     "optax",
@@ -68,6 +69,7 @@ Repository = "https://github.com/talmolab/stac-mjx"
 
 [project.scripts]
 stac-mjx = "stac_mjx.cli:main"
+stac-mjx-diagnostics = "stac_mjx.diagnostics:main"
 
 [tool.setuptools.packages.find]
 exclude = ["site"]

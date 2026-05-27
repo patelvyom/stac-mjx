@@ -17,6 +17,7 @@ def viz_stac(
     width: int = 1920,
     base_path: Path | None = None,
     show_marker_error: bool = False,
+    diagnostics: dict | None = None,
 ) -> tuple[DictConfig, list[np.ndarray]]:
     """Render forward kinematics from STAC output data.
 
@@ -30,10 +31,14 @@ def viz_stac(
         width: Render width in pixels.
         base_path: Base path for resolving config paths. Defaults to cwd.
         show_marker_error: Whether to show marker-keypoint distance.
+        diagnostics: Optional diagnostics dict from compute_stac_diagnostics.
 
     Returns:
         Tuple of (config, list of rendered RGB frames).
     """
+    if isinstance(diagnostics, bool):
+        raise TypeError("diagnostics must be a diagnostics dict or None")
+
     cfg, d = io.load_stac_data(data_path)
     qpos = d.qpos
     kp_data = d.kp_data
@@ -58,4 +63,5 @@ def viz_stac(
         height,
         width,
         show_marker_error,
+        diagnostics,
     )

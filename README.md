@@ -182,7 +182,34 @@ The following is the full CLI script run as a sequence of function calls:
    media.show_video(frames, fps=cfg.model.RENDER_FPS)
    ```
 
-3. If the rendering is poor, it's likely that some hyperparameter tuning is necessary. (details WIP)
+3. Compute diagnostics or render a diagnostic overlay:
+   ```python
+   cfg, data = stac_mjx.load_stac_data(data_path)
+   diagnostics = stac_mjx.compute_stac_diagnostics(
+      data,
+      cfg,
+      source_h5=data_path,
+      write=True,
+   )
+
+   cfg, frames = stac_mjx.viz_stac(
+      data_path,
+      n_frames,
+      save_path,
+      diagnostics=diagnostics,
+   )
+   ```
+
+   The CLI can rerun diagnostics for an existing output file:
+   ```bash
+   stac-mjx-diagnostics path/to/ik.h5
+   ```
+   The STAC CLI can also render a diagnostic overlay after IK:
+   ```bash
+   stac-mjx +stac.diagnostics.render_overlay=True
+   ```
+
+4. If the rendering is poor, it's likely that some hyperparameter tuning is necessary. (details WIP)
 
 
 ### Keypoint Correspondence UI

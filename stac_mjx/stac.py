@@ -346,13 +346,7 @@ class Stac:
 
         flattened_errors, mean, std = self._get_error_stats(frame_error)
         print(f"Mean: {mean:.6f} \t Standard deviation: {std:.6f}")
-        return self._package_data(
-            np.array(qpos),
-            np.array(body_pos),
-            np.array(body_quat),
-            np.array(marker_pos),
-            np.array(kp_data),
-        )
+        return self._package_data(qpos, body_pos, body_quat, marker_pos, kp_data)
 
     def _prepare_ik_state(
         self,
@@ -618,20 +612,20 @@ class Stac:
         print(f"Mean: {mean:.6f} \t Standard deviation: {std:.6f}")
 
         return self._package_data(
-            np.array(qpos),
-            np.array(body_pos),
-            np.array(body_quat),
-            np.array(marker_pos),
-            np.array(kp_data),
+            qpos,
+            body_pos,
+            body_quat,
+            marker_pos,
+            kp_data,
         )
 
     def _package_data(
         self,
-        qpos: np.ndarray,
-        body_pos: np.ndarray,
-        body_quat: np.ndarray,
-        marker_pos: np.ndarray,
-        kp_data: np.ndarray,
+        qpos: Float[Array, "n_frames n_qpos"],
+        body_pos: Float[Array, "n_frames n_bodies 3"],
+        body_quat: Float[Array, "n_frames n_bodies 4"],
+        marker_pos: Float[Array, "n_frames n_keypoints 3"],
+        kp_data: Float[Array, "n_frames n_keypoints_xyz"],
     ) -> io.StacData:
         """Package optimization results into a StacData structure.
 
@@ -646,7 +640,7 @@ class Stac:
             Packaged STAC output data.
         """
         offsets = self._offsets
-        kp_data = kp_data.reshape(-1, kp_data.shape[-1])
+        kp_data = jp.reshape(kp_data, (-1, kp_data.shape[-1]))
 
         return io.StacData(
             qpos=qpos,
@@ -664,7 +658,7 @@ class Stac:
         self,
         offsets: Float[Array, "n_keypoints 3"],
         show_marker_error: bool,
-    ) -> tuple[mujoco.MjModel, list[int]]:
+    ) -> tuple[mujoco.MjModel, list[int], dict[str, tuple[int, int]]]:
         """Create a rendering model with keypoint and marker sites.
 
         Args:
@@ -672,7 +666,8 @@ class Stac:
             show_marker_error: Whether to add tendons showing marker-keypoint distance.
 
         Returns:
-            Tuple of (compiled render model, keypoint site indices).
+            Tuple of compiled render model, keypoint site indices, and diagnostic
+            site indices keyed by keypoint name.
         """
         render_spec = self._build_body_spec()
         keypoint_site_names = []
@@ -722,12 +717,20 @@ class Stac:
             mujoco.mj_name2id(render_mj_model, mujoco.mjtObj.mjOBJ_SITE, site_name)
             for site_name in keypoint_site_names
         ]
-        return render_mj_model, keypoint_site_idxs
+        diagnostic_site_idxs = {}
+        for key, keypoint_site_idx in zip(
+            self.cfg.model.KEYPOINT_MODEL_PAIRS.keys(), keypoint_site_idxs
+        ):
+            marker_site_idx = mujoco.mj_name2id(
+                render_mj_model, mujoco.mjtObj.mjOBJ_SITE, key + "_new"
+            )
+            diagnostic_site_idxs[key] = (keypoint_site_idx, marker_site_idx)
+        return render_mj_model, keypoint_site_idxs, diagnostic_site_idxs
 
     def render(
         self,
-        qpos: np.ndarray,
-        kp_data: np.ndarray,
+        qpos: Float[Array, "n_frames n_qpos"],
+        kp_data: Float[Array, "n_frames n_keypoints_xyz"],
         offsets: Float[Array, "n_keypoints 3"],
         n_frames: int,
         save_path: str | Path,
@@ -736,6 +739,7 @@ class Stac:
         height: int = 1200,
         width: int = 1920,
         show_marker_error: bool = False,
+        diagnostics: dict | None = None,
     ) -> list[np.ndarray]:
         """Render fitted results as a video.
 
@@ -750,6 +754,7 @@ class Stac:
             height: Render height in pixels.
             width: Render width in pixels.
             show_marker_error: Whether to show marker-keypoint distance.
+            diagnostics: Optional diagnostics dict from compute_stac_diagnostics.
 
         Returns:
             List of rendered RGB frames.
@@ -757,6 +762,8 @@ class Stac:
         Raises:
             ValueError: If qpos/kp_data lengths mismatch or frame range is invalid.
         """
+        if isinstance(diagnostics, bool):
+            raise TypeError("diagnostics must be a diagnostics dict or None")
         if qpos.shape[0] != kp_data.shape[0]:
             raise ValueError(
                 f"Length of qpos ({qpos.shape[0]}) is not equal to the length of kp_data({kp_data.shape[0]})"
@@ -770,8 +777,8 @@ class Stac:
                 f"start_frame + n_frames ({start_frame} + {n_frames}) must be less than the length of given qpos and kp_data ({kp_data.shape[0]})"
             )
 
-        render_mj_model, keypoint_site_idxs = self._build_render_model(
-            offsets, show_marker_error
+        render_mj_model, keypoint_site_idxs, diagnostic_site_idxs = (
+            self._build_render_model(offsets, show_marker_error)
         )
 
         scene_option = mujoco.MjvOption()
@@ -794,23 +801,176 @@ class Stac:
 
         renderer = mujoco.Renderer(render_mj_model, height=height, width=width)
 
-        kp_data = kp_data[: qpos.shape[0]]
-
+        kp_data = np.asarray(kp_data[: qpos.shape[0]])
         kp_data = kp_data[start_frame : start_frame + n_frames]
-        qpos = qpos[start_frame : start_frame + n_frames]
+        qpos = np.asarray(qpos[start_frame : start_frame + n_frames])
+
+        frame_metrics = {}
+        diagnostic_site_indices = np.array([], dtype=int)
+        diagnostic_site_size = None
+        diagnostic_site_rgba = None
+        if diagnostics is not None:
+            frame_metrics = diagnostics.get("frame_metrics", {})
+            diagnostic_site_indices = np.array(
+                sorted({idx for pair in diagnostic_site_idxs.values() for idx in pair}),
+                dtype=int,
+            )
+            diagnostic_site_size = render_mj_model.site_size[
+                diagnostic_site_indices
+            ].copy()
+            diagnostic_site_rgba = render_mj_model.site_rgba[
+                diagnostic_site_indices
+            ].copy()
 
         frames = []
         with imageio.get_writer(save_path, fps=self.cfg.model.RENDER_FPS) as video:
-            for qpos, kps in tqdm(zip(qpos, kp_data)):
+            for local_frame, (qpos_frame, kps) in enumerate(
+                tqdm(zip(qpos, kp_data), total=n_frames)
+            ):
+                absolute_frame = start_frame + local_frame
+                if diagnostic_site_indices.size > 0:
+                    render_mj_model.site_size[diagnostic_site_indices] = (
+                        diagnostic_site_size
+                    )
+                    render_mj_model.site_rgba[diagnostic_site_indices] = (
+                        diagnostic_site_rgba
+                    )
+                    _highlight_diagnostic_site(
+                        render_mj_model,
+                        diagnostic_site_idxs,
+                        frame_metrics,
+                        absolute_frame,
+                        self._marker_size,
+                    )
                 # Set keypoints--they're in cartesian space, but since they're attached to the worldbody they're the same as offsets
                 render_mj_model.site_pos[keypoint_site_idxs] = np.reshape(kps, (-1, 3))
-                mj_data.qpos = qpos
+                mj_data.qpos = qpos_frame
 
                 mujoco.mj_fwdPosition(render_mj_model, mj_data)
 
                 renderer.update_scene(mj_data, camera=camera, scene_option=scene_option)
                 pixels = renderer.render()
+                if diagnostics is not None:
+                    pixels = _draw_diagnostics_overlay(
+                        pixels, frame_metrics, absolute_frame
+                    )
                 video.append_data(pixels)
                 frames.append(pixels)
 
         return frames
+
+
+def _highlight_diagnostic_site(
+    render_mj_model: mujoco.MjModel,
+    diagnostic_site_idxs: dict[str, tuple[int, int]],
+    frame_metrics: dict,
+    frame: int,
+    marker_size: float,
+) -> None:
+    kp_name = _diagnostic_value(frame_metrics, "worst_kp_name", frame, "")
+    if kp_name not in diagnostic_site_idxs:
+        return
+    severity = _diagnostic_value(frame_metrics, "event_severity", frame, "")
+    color = np.array(_diagnostic_color(severity), dtype=float) / 255.0
+    for site_idx in diagnostic_site_idxs[kp_name]:
+        render_mj_model.site_rgba[site_idx] = [color[0], color[1], color[2], 1.0]
+        render_mj_model.site_size[site_idx] = np.maximum(
+            render_mj_model.site_size[site_idx] * 1.8,
+            np.array([marker_size * 2.2] * 3),
+        )
+
+
+def _draw_diagnostics_overlay(
+    pixels: np.ndarray,
+    frame_metrics: dict,
+    frame: int,
+) -> np.ndarray:
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.fromarray(pixels).convert("RGBA")
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    try:
+        font = ImageFont.truetype(
+            "DejaVuSans.ttf", max(14, min(22, image.width // 70))
+        )
+    except OSError:
+        font = ImageFont.load_default()
+
+    severity = _diagnostic_value(frame_metrics, "event_severity", frame, "")
+    color = _diagnostic_color(severity)
+    lines = [
+        f"frame {frame}",
+        (
+            "marker "
+            f"{_format_metric(_diagnostic_value(frame_metrics, 'marker_rmse_mm', frame))}"
+            " mm"
+            " | "
+            f"{_diagnostic_value(frame_metrics, 'worst_kp_name', frame, '')} "
+            f"{_format_metric(_diagnostic_value(frame_metrics, 'worst_kp_residual_mm', frame))}"
+            " mm"
+        ),
+        (
+            "root "
+            f"{_format_metric(_diagnostic_value(frame_metrics, 'root_pos_step_mm', frame))}"
+            " mm"
+            " | "
+            f"{_format_metric(_diagnostic_value(frame_metrics, 'root_geodesic_step_deg', frame))}"
+            " deg"
+        ),
+        (
+            "qpos "
+            f"{_diagnostic_value(frame_metrics, 'qpos_step_max_abs_name', frame, '')} "
+            f"{_format_metric(_diagnostic_value(frame_metrics, 'qpos_step_max_abs', frame))}"
+        ),
+    ]
+    event_metrics = _diagnostic_value(frame_metrics, "event_metrics", frame, "")
+    if event_metrics:
+        lines.append(f"events {event_metrics}")
+
+    pad = 12
+    x = 18
+    y = 18
+    boxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
+    text_w = max(box[2] - box[0] for box in boxes)
+    line_h = max(box[3] - box[1] for box in boxes) + 7
+    panel_h = line_h * len(lines) + pad * 2
+    draw.rectangle(
+        [x, y, x + text_w + pad * 2, y + panel_h],
+        fill=(18, 20, 22, 176),
+    )
+    draw.rectangle([x, y, x + 4, y + panel_h], fill=(*color, 230))
+    for i, line in enumerate(lines):
+        draw.text(
+            (x + pad, y + pad + i * line_h),
+            line,
+            fill=(*color, 255),
+            font=font,
+        )
+
+    return np.asarray(Image.alpha_composite(image, overlay).convert("RGB"))
+
+
+def _diagnostic_color(severity: str) -> tuple[int, int, int]:
+    if severity == "critical":
+        return (198, 91, 91)
+    if severity == "warn":
+        return (216, 164, 65)
+    return (244, 241, 232)
+
+
+def _diagnostic_value(frame_metrics: dict, key: str, frame: int, default=np.nan):
+    values = frame_metrics.get(key)
+    if values is None or frame < 0 or frame >= len(values):
+        return default
+    return values[frame]
+
+
+def _format_metric(value) -> str:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "--"
+    if not np.isfinite(value):
+        return "--"
+    return f"{value:.2f}"

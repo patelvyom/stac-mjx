@@ -1,10 +1,9 @@
 """User-level API to run stac."""
 
 from jax import Array
-import numpy as np
 import time
 from omegaconf import DictConfig
-from stac_mjx import io, utils
+from stac_mjx import diagnostics, io, utils
 from stac_mjx.config import compose_config
 from stac_mjx.stac import Stac
 from pathlib import Path
@@ -83,6 +82,7 @@ def run_stac(
         io.save_data_to_h5(
             config=cfg, file_path=calibration_path, **calibration_data.as_dict()
         )
+        _write_diagnostics_if_enabled(cfg, calibration_data, calibration_path)
     else:
         print(
             "Skipping calibration. To change this behavior, set cfg.stac.skip_calibration to False."
@@ -110,11 +110,80 @@ def run_stac(
             dt=stac._mj_model.opt.timestep,
             freejoint=stac._freejoint,
         )
-        ik_data.qvel = np.array(qvels)
+        ik_data.qvel = qvels
         print(f"Finished compute velocity in {time.time() - t_vel} seconds")
 
     print(
         f"Saving data to {ik_path}. Finished in {(time.time() - start_time)/60:.2f} minutes"
     )
     io.save_data_to_h5(config=cfg, file_path=ik_path, **ik_data.as_dict())
+    diagnostic_data = _write_diagnostics_if_enabled(cfg, ik_data, ik_path)
+    _render_diagnostics_overlay_if_enabled(
+        cfg,
+        stac,
+        ik_data,
+        ik_path,
+        diagnostic_data,
+        base_path,
+    )
     return calibration_path, ik_path
+
+
+def _write_diagnostics_if_enabled(
+    cfg: DictConfig, data: io.StacData, path: Path
+) -> dict | None:
+    diagnostics_cfg = getattr(getattr(cfg, "stac", None), "diagnostics", None)
+    if diagnostics_cfg is None or not getattr(diagnostics_cfg, "enabled", True):
+        return None
+    result = diagnostics.compute_stac_diagnostics(
+        data,
+        cfg,
+        source_h5=path,
+        write=True,
+    )
+    print(f"Diagnostics saved to {result['output_paths']['summary']}", flush=True)
+    return result
+
+
+def _render_diagnostics_overlay_if_enabled(
+    cfg: DictConfig,
+    stac: Stac,
+    data: io.StacData,
+    ik_path: Path,
+    diagnostic_data: dict | None,
+    base_path: Path,
+) -> None:
+    diagnostics_cfg = getattr(getattr(cfg, "stac", None), "diagnostics", None)
+    if diagnostics_cfg is None or not getattr(diagnostics_cfg, "render_overlay", False):
+        return
+    if diagnostic_data is None:
+        diagnostic_data = diagnostics.compute_stac_diagnostics(data, cfg, source_h5=ik_path)
+
+    overlay_path = getattr(diagnostics_cfg, "overlay_path", None)
+    if overlay_path is None:
+        overlay_path = ik_path.with_name(f"{ik_path.stem}_diagnostic_overlay.mp4")
+    else:
+        overlay_path = base_path / overlay_path
+    overlay_path.parent.mkdir(parents=True, exist_ok=True)
+
+    start_frame = int(getattr(diagnostics_cfg, "overlay_start_frame", 0) or 0)
+    n_frames = getattr(diagnostics_cfg, "overlay_n_frames", None)
+    if n_frames is None:
+        n_frames = int(data.qpos.shape[0]) - start_frame
+    n_frames = min(int(n_frames), int(data.qpos.shape[0]) - start_frame)
+    if n_frames <= 0:
+        raise ValueError("Diagnostics overlay requested with no frames to render")
+
+    stac.render(
+        data.qpos,
+        data.kp_data,
+        data.offsets,
+        n_frames=n_frames,
+        save_path=overlay_path,
+        start_frame=start_frame,
+        height=int(getattr(diagnostics_cfg, "overlay_height", 480) or 480),
+        width=int(getattr(diagnostics_cfg, "overlay_width", 640) or 640),
+        show_marker_error=True,
+        diagnostics=diagnostic_data,
+    )
+    print(f"Diagnostics overlay saved to {overlay_path}", flush=True)

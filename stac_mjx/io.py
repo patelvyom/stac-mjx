@@ -19,17 +19,17 @@ from stac_mjx.config import Config
 class StacData:
     """Data structure for STAC output."""
 
-    qpos: np.ndarray  # Root position and quaternion, and joint angles
-    xpos: np.ndarray  # Body positions
-    xquat: np.ndarray  # Body quaternions
-    marker_sites: np.ndarray  # Marker site positions
+    qpos: Array  # Root position and quaternion, and joint angles
+    xpos: Array  # Body positions
+    xquat: Array  # Body quaternions
+    marker_sites: Array  # Marker site positions
     offsets: Array  # Marker site offsets
-    kp_data: np.ndarray  # Keypoint data
+    kp_data: Array  # Keypoint data
     names_qpos: list[str]  # Names of qpos
     names_xpos: list[str]  # Names of xpos
     kp_names: list[str]  # Names of keypoints
-    qvel: np.ndarray = field(
-        default_factory=lambda: np.array([])
+    qvel: Array = field(
+        default_factory=lambda: jp.array([])
     )  # Inferred joint velocities, OPTIONAL
 
     def as_dict(self) -> dict:
@@ -197,13 +197,13 @@ def save_data_to_h5(
     kp_names: list[str],
     names_qpos: list[str],
     names_xpos: list[str],
-    kp_data: np.ndarray,
-    marker_sites: np.ndarray,
+    kp_data: Array,
+    marker_sites: Array,
     offsets: Array,
-    qpos: np.ndarray,
-    xpos: np.ndarray,
-    xquat: np.ndarray,
-    qvel: np.ndarray,
+    qpos: Array,
+    xpos: Array,
+    xquat: Array,
+    qvel: Array,
     file_path: str | Path,
 ) -> None:
     """Save configuration and STAC data to an HDF5 file.
@@ -229,13 +229,15 @@ def save_data_to_h5(
         f.create_dataset("kp_names", data=np.array(kp_names, dtype="S"))
         f.create_dataset("names_qpos", data=np.array(names_qpos, dtype="S"))
         f.create_dataset("names_xpos", data=np.array(names_xpos, dtype="S"))
-        f.create_dataset("kp_data", data=kp_data, compression="gzip")
-        f.create_dataset("marker_sites", data=marker_sites, compression="gzip")
-        f.create_dataset("offsets", data=offsets, compression="gzip")
-        f.create_dataset("qpos", data=qpos, compression="gzip")
-        f.create_dataset("qvel", data=qvel, compression="gzip")
-        f.create_dataset("xpos", data=xpos, compression="gzip")
-        f.create_dataset("xquat", data=xquat, compression="gzip")
+        f.create_dataset("kp_data", data=np.asarray(kp_data), compression="gzip")
+        f.create_dataset(
+            "marker_sites", data=np.asarray(marker_sites), compression="gzip"
+        )
+        f.create_dataset("offsets", data=np.asarray(offsets), compression="gzip")
+        f.create_dataset("qpos", data=np.asarray(qpos), compression="gzip")
+        f.create_dataset("qvel", data=np.asarray(qvel), compression="gzip")
+        f.create_dataset("xpos", data=np.asarray(xpos), compression="gzip")
+        f.create_dataset("xquat", data=np.asarray(xquat), compression="gzip")
 
 
 def load_stac_data(file_path: str | Path) -> tuple[Config, StacData]:
@@ -255,13 +257,13 @@ def load_stac_data(file_path: str | Path) -> tuple[Config, StacData]:
         kp_names = [name.decode("utf-8") for name in f["kp_names"]]
         names_qpos = [name.decode("utf-8") for name in f["names_qpos"]]
         names_xpos = [name.decode("utf-8") for name in f["names_xpos"]]
-        kp_data = f["kp_data"][()]
-        marker_sites = f["marker_sites"][()]
+        kp_data = jp.array(f["kp_data"][()])
+        marker_sites = jp.array(f["marker_sites"][()])
         offsets = jp.array(f["offsets"][()])
-        qpos = f["qpos"][()]
-        qvel = f["qvel"][()]
-        xpos = f["xpos"][()]
-        xquat = f["xquat"][()]
+        qpos = jp.array(f["qpos"][()])
+        qvel = jp.array(f["qvel"][()])
+        xpos = jp.array(f["xpos"][()])
+        xquat = jp.array(f["xquat"][()])
 
         stac_data = StacData(
             kp_names=kp_names,
