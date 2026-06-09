@@ -3,14 +3,6 @@
 import os
 import sys
 
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-if (
-    os.environ.get("MUJOCO_GL") == "osmesa"
-    and os.environ.get("PYOPENGL_PLATFORM") != "osmesa"
-):
-    os.environ["MUJOCO_GL"] = "egl"
-os.environ.setdefault("MUJOCO_GL", "egl")
-
 import jax
 from jax import Array
 from jax import numpy as jp
