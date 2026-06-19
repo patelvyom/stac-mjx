@@ -287,7 +287,9 @@ def _build_se3_problem(
     kp_default = jp.zeros((n_kp_coords,))
 
     SE3Var = jaxls.SE3Var
+
     class JointVar(jaxls.Var[jp.ndarray], default_factory=lambda: joint_default): ...
+
     class KpVar(jaxls.Var[jp.ndarray], default_factory=lambda: kp_default): ...
 
     frame_ids = jp.arange(n_frames)
@@ -295,10 +297,18 @@ def _build_se3_problem(
     offset_vars = None
     if dynamic_site_offsets:
         offset_default = jp.zeros((site_offsets.size,))
-        class OffsetVar(jaxls.Var[jp.ndarray], default_factory=lambda: offset_default): ...
+
+        class OffsetVar(
+            jaxls.Var[jp.ndarray], default_factory=lambda: offset_default
+        ): ...
+
         offset_vars = OffsetVar(frame_ids)
 
-    root_vars, joint_vars, kp_vars = SE3Var(frame_ids), JointVar(frame_ids), KpVar(frame_ids)
+    root_vars, joint_vars, kp_vars = (
+        SE3Var(frame_ids),
+        JointVar(frame_ids),
+        KpVar(frame_ids),
+    )
     costs: list[jaxls.Cost] = []
 
     if dynamic_site_offsets:
@@ -482,7 +492,11 @@ def _build_flat_problem(
     offset_vars = None
     if dynamic_site_offsets:
         offset_default = jp.zeros((site_offsets.size,))
-        class OffsetVar(jaxls.Var[jp.ndarray], default_factory=lambda: offset_default): ...
+
+        class OffsetVar(
+            jaxls.Var[jp.ndarray], default_factory=lambda: offset_default
+        ): ...
+
         offset_vars = OffsetVar(jp.arange(n_frames))
 
     qpos_vars, kp_vars = QVar(jp.arange(n_frames)), KpVar(jp.arange(n_frames))
