@@ -122,6 +122,21 @@ class Stac:
         self._lb, self._ub, self._part_names = _align_joint_dims(
             self._mj_model.jnt_type, self._mj_model.jnt_range, joint_names
         )
+        joint_limit_scale = float(
+            getattr(self.cfg.stac.q_opt, "joint_limit_scale", 1.0)
+        )
+        if joint_limit_scale != 1.0:
+            finite_lb = jp.isfinite(self._lb)
+            finite_ub = jp.isfinite(self._ub)
+            scale_mask = jp.ones_like(self._lb, dtype=bool)
+            if self._mj_model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE:
+                scale_mask = scale_mask.at[:7].set(False)
+            self._lb = jp.where(
+                finite_lb & scale_mask, self._lb * joint_limit_scale, self._lb
+            )
+            self._ub = jp.where(
+                finite_ub & scale_mask, self._ub * joint_limit_scale, self._ub
+            )
 
         # Generate boolean flags for keypoints included in trunk optimization.
         self._trunk_kps = jp.array(

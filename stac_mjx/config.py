@@ -54,6 +54,11 @@ class StacConfig:
     infer_qvels: bool  # Infer qvels if True
     n_frames_per_clip: int  # Number of frames per IK chunk
     mujoco: MujocoConfig  # Configuration for Mujoco
+    despike_keypoints: bool = False  # Replace isolated one-frame keypoint spikes
+    keypoint_despike_threshold_mm: float = 10.0
+    keypoint_despike_sigma: float = 10.0
+    keypoint_despike_neighbor_ratio: float = 1.5
+    write_fit_report: bool = True  # Write fit diagnostics and an HTML report after IK
     q_opt: "QOptConfig" = field(default_factory=lambda: QOptConfig())
 
 
@@ -62,6 +67,7 @@ class QOptConfig:
     """q optimization settings."""
 
     initial_step_damping: float = 1.0
+    joint_limit_scale: float = 1.0
     velocity_smoothness_weight: float = 0.05
     context_frames: int = 16
     coarse_init_stride: int = 12

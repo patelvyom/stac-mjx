@@ -162,6 +162,51 @@ def make_context_window(
     return jp.concatenate(parts, axis=0), n_frames_to_output
 
 
+def despike_keypoints(
+    kp_data: Float[Array, "n_frames n_keypoints_xyz"],
+    n_keypoints: int,
+    threshold_mm: float,
+    sigma: float,
+    neighbor_ratio: float,
+) -> tuple[Float[Array, "n_frames n_keypoints_xyz"], int]:
+    """Replace isolated one-frame keypoint spikes with neighbor interpolation."""
+    kp_np = np.asarray(kp_data)
+    if kp_np.ndim != 2 or kp_np.shape[1] != n_keypoints * 3:
+        raise ValueError("kp_data must have shape (frames, n_keypoints * 3).")
+    if kp_np.shape[0] < 3 or n_keypoints == 0:
+        return kp_data, 0
+
+    kp_xyz = kp_np.reshape(kp_np.shape[0], n_keypoints, 3).copy()
+    interp = 0.5 * (kp_xyz[:-2] + kp_xyz[2:])
+    error_mm = np.full((kp_xyz.shape[0], n_keypoints), np.nan, dtype=float)
+    error_mm[1:-1] = np.linalg.norm(kp_xyz[1:-1] - interp, axis=2) * 1000.0
+
+    valid_error = error_mm[1:-1]
+    median = np.nanmedian(valid_error, axis=0)
+    mad = np.nanmedian(np.abs(valid_error - median), axis=0)
+    adaptive_threshold = median + float(sigma) * 1.4826 * mad
+    threshold = np.where(
+        np.isfinite(adaptive_threshold),
+        np.maximum(float(threshold_mm), adaptive_threshold),
+        float(threshold_mm),
+    )
+
+    center = error_mm[1:-1]
+    previous = error_mm[:-2]
+    following = error_mm[2:]
+    local_peak = (center >= previous * float(neighbor_ratio)) & (
+        center >= following * float(neighbor_ratio)
+    )
+    despike_mask = np.isfinite(center) & (center >= threshold) & local_peak
+
+    inner = kp_xyz[1:-1]
+    inner[despike_mask] = interp[despike_mask]
+    kp_xyz[1:-1] = inner
+    return jp.asarray(kp_xyz.reshape(kp_np.shape), dtype=kp_data.dtype), int(
+        np.sum(despike_mask)
+    )
+
+
 def coarse_keyframe_indices(n_frames: int, stride: int) -> Int[Array, " n_keyframes"]:
     """Return strided coarse IK keyframes, always including the final frame."""
     if n_frames <= 1:

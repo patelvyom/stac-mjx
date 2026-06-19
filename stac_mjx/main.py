@@ -68,6 +68,19 @@ def run_stac(
             f"kp_names length matches the number of keypoints in kp_data."
         )
 
+    if bool(getattr(cfg.stac, "despike_keypoints", False)):
+        kp_data, despike_count = utils.despike_keypoints(
+            kp_data,
+            len(kp_names),
+            float(getattr(cfg.stac, "keypoint_despike_threshold_mm", 10.0)),
+            float(getattr(cfg.stac, "keypoint_despike_sigma", 10.0)),
+            float(getattr(cfg.stac, "keypoint_despike_neighbor_ratio", 1.5)),
+        )
+        print(
+            f"Despiked {despike_count} isolated keypoint-frame samples before STAC.",
+            flush=True,
+        )
+
     start_time = time.time()
 
     calibration_path = base_path / cfg.stac.calibration_path
@@ -117,4 +130,9 @@ def run_stac(
         f"Saving data to {ik_path}. Finished in {(time.time() - start_time)/60:.2f} minutes"
     )
     io.save_data_to_h5(config=cfg, file_path=ik_path, **ik_data.as_dict())
+    if bool(getattr(cfg.stac, "write_fit_report", False)):
+        from stac_mjx.fit_report import generate_fit_report
+
+        report_path = generate_fit_report(ik_path)
+        print(f"Fit quality report written to {report_path}", flush=True)
     return calibration_path, ik_path
