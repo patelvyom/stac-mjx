@@ -123,6 +123,7 @@ class QOptProblem:
     site_offsets: Float[Array, "n_keypoints 3"]
     dynamic_site_offsets: bool
     _KpVar: type
+    _OffsetVar: type | None = None
     _SE3Var: type | None = None
     _JointVar: type | None = None
     _QVar: type | None = None
@@ -217,7 +218,7 @@ def q_opt(
     problem: QOptProblem,
     q_init: Float[Array, "n_frames n_qpos"],
     kp_data: Float[Array, "n_frames n_keypoints_xyz"],
-    n_solver_max_iters: int = 50,
+    n_solver_max_iters: int = 150,
     initial_step_damping: float = 1.0,
     site_offsets: Float[Array, "n_keypoints 3"] | None = None,
     return_summary: bool = False,
@@ -240,11 +241,11 @@ def q_opt(
         kp_data = kp_data.reshape(kp_data.shape[0], -1)
     if site_offsets is None:
         site_offsets = problem.site_offsets
+    offset_data = None
     if problem.dynamic_site_offsets:
         offset_data = jp.broadcast_to(
             site_offsets.reshape(1, -1), (kp_data.shape[0], site_offsets.size)
         )
-        kp_data = jp.concatenate([kp_data, offset_data], axis=-1)
 
     solver_cfg = dict(
         verbose=False,
@@ -257,8 +258,12 @@ def q_opt(
     )
 
     if problem.se3_mode:
-        return _solve_se3(problem, q_init, kp_data, solver_cfg, return_summary)
-    return _solve_flat(problem, q_init, kp_data, solver_cfg, return_summary)
+        return _solve_se3(
+            problem, q_init, kp_data, offset_data, solver_cfg, return_summary
+        )
+    return _solve_flat(
+        problem, q_init, kp_data, offset_data, solver_cfg, return_summary
+    )
 
 
 def _build_se3_problem(
@@ -279,49 +284,67 @@ def _build_se3_problem(
     n_hinges = int(mjx_model.nq) - _FREE_JOINT_NDOF
     joint_default = jp.zeros((n_hinges,))
     site_bodyid = jp.array(mjx_model.site_bodyid)[site_idxs]
-    kp_data_dim = (
-        n_kp_coords + site_offsets.size if dynamic_site_offsets else n_kp_coords
-    )
-    kp_default = jp.zeros((kp_data_dim,))
+    kp_default = jp.zeros((n_kp_coords,))
 
     SE3Var = jaxls.SE3Var
-
     class JointVar(jaxls.Var[jp.ndarray], default_factory=lambda: joint_default): ...
-
     class KpVar(jaxls.Var[jp.ndarray], default_factory=lambda: kp_default): ...
 
     frame_ids = jp.arange(n_frames)
-    root_vars, joint_vars, kp_vars = (
-        SE3Var(frame_ids),
-        JointVar(frame_ids),
-        KpVar(frame_ids),
-    )
+    OffsetVar = None
+    offset_vars = None
+    if dynamic_site_offsets:
+        offset_default = jp.zeros((site_offsets.size,))
+        class OffsetVar(jaxls.Var[jp.ndarray], default_factory=lambda: offset_default): ...
+        offset_vars = OffsetVar(frame_ids)
+
+    root_vars, joint_vars, kp_vars = SE3Var(frame_ids), JointVar(frame_ids), KpVar(frame_ids)
     costs: list[jaxls.Cost] = []
 
-    @jaxls.Cost.factory
-    def marker_cost(
-        vals: jaxls.VarValues, root: SE3Var, joints: JointVar, kp: KpVar
-    ) -> jp.ndarray:
-        se3 = vals[root]
-        hinge_angles = vals[joints]
-        obs = jax.lax.stop_gradient(vals[kp])
-        q = jp.concatenate([se3.translation(), se3.rotation().wxyz, hinge_angles])
-        full_q = jp.where(joint_mask, q, mjx_data.qpos)
-        fk_data = mjx_data.replace(qpos=full_q)
-        fk_data = utils.kinematics(mjx_model, fk_data)
-        fk_data = utils.com_pos(mjx_model, fk_data)
-        if dynamic_site_offsets:
-            offsets = obs[n_kp_coords:].reshape((-1, 3))
-            obs = obs[:n_kp_coords]
-            marker_pos = fk_data.xpos[site_bodyid] + jp.einsum(
-                "kij,kj->ki", fk_data.xmat[site_bodyid], offsets
-            )
-            markers = marker_pos.flatten()
-        else:
-            markers = utils.get_site_xpos(fk_data, site_idxs).flatten()
-        return (obs - markers) * kp_mask
+    if dynamic_site_offsets:
 
-    costs.append(marker_cost(root_vars, joint_vars, kp_vars))
+        @jaxls.Cost.factory
+        def marker_cost(
+            vals: jaxls.VarValues,
+            root: SE3Var,
+            joints: JointVar,
+            kp: KpVar,
+            offsets: OffsetVar,
+        ) -> jp.ndarray:
+            se3 = vals[root]
+            hinge_angles = vals[joints]
+            obs = jax.lax.stop_gradient(vals[kp])
+            # Offsets are per-solve data, not optimized state.
+            marker_offsets = jax.lax.stop_gradient(vals[offsets]).reshape((-1, 3))
+            q = jp.concatenate([se3.translation(), se3.rotation().wxyz, hinge_angles])
+            full_q = jp.where(joint_mask, q, mjx_data.qpos)
+            fk_data = mjx_data.replace(qpos=full_q)
+            fk_data = utils.kinematics(mjx_model, fk_data)
+            fk_data = utils.com_pos(mjx_model, fk_data)
+            marker_pos = fk_data.xpos[site_bodyid] + jp.einsum(
+                "kij,kj->ki", fk_data.xmat[site_bodyid], marker_offsets
+            )
+            return (obs - marker_pos.flatten()) * kp_mask
+
+        costs.append(marker_cost(root_vars, joint_vars, kp_vars, offset_vars))
+    else:
+
+        @jaxls.Cost.factory
+        def marker_cost(
+            vals: jaxls.VarValues, root: SE3Var, joints: JointVar, kp: KpVar
+        ) -> jp.ndarray:
+            se3 = vals[root]
+            hinge_angles = vals[joints]
+            obs = jax.lax.stop_gradient(vals[kp])
+            q = jp.concatenate([se3.translation(), se3.rotation().wxyz, hinge_angles])
+            full_q = jp.where(joint_mask, q, mjx_data.qpos)
+            fk_data = mjx_data.replace(qpos=full_q)
+            fk_data = utils.kinematics(mjx_model, fk_data)
+            fk_data = utils.com_pos(mjx_model, fk_data)
+            markers = utils.get_site_xpos(fk_data, site_idxs).flatten()
+            return (obs - markers) * kp_mask
+
+        costs.append(marker_cost(root_vars, joint_vars, kp_vars))
 
     hinge_reg_weights = joint_reg_weights[_FREE_JOINT_NDOF:]
     hinge_mask = joint_mask[_FREE_JOINT_NDOF:]
@@ -367,9 +390,13 @@ def _build_se3_problem(
             )
         )
 
+    problem_vars = [root_vars, joint_vars, kp_vars]
+    if dynamic_site_offsets:
+        problem_vars.append(offset_vars)
+
     analyzed = jaxls.LeastSquaresProblem(
         costs=costs,
-        variables=[root_vars, joint_vars, kp_vars],
+        variables=problem_vars,
     ).analyze()
 
     return QOptProblem(
@@ -381,12 +408,13 @@ def _build_se3_problem(
         site_offsets=site_offsets,
         dynamic_site_offsets=dynamic_site_offsets,
         _KpVar=KpVar,
+        _OffsetVar=OffsetVar,
         _SE3Var=SE3Var,
         _JointVar=JointVar,
     )
 
 
-def _solve_se3(problem, q_init, kp_data, solver_cfg, return_summary):
+def _solve_se3(problem, q_init, kp_data, offset_data, solver_cfg, return_summary):
     n_frames = problem.n_frames
     SE3Var, JointVar, KpVar = problem._SE3Var, problem._JointVar, problem._KpVar
 
@@ -399,14 +427,16 @@ def _solve_se3(problem, q_init, kp_data, solver_cfg, return_summary):
     se3_init = jaxlie.SE3.from_rotation_and_translation(jaxlie.SO3(wxyz=wxyz), xyz)
 
     frame_ids = jp.arange(n_frames)
+    initial_values = [
+        SE3Var(frame_ids).with_value(se3_init),
+        JointVar(frame_ids).with_value(hinges),
+        KpVar(frame_ids).with_value(kp_data),
+    ]
+    if problem.dynamic_site_offsets:
+        initial_values.append(problem._OffsetVar(frame_ids).with_value(offset_data))
+
     solve_out = problem.analyzed.solve(
-        initial_vals=jaxls.VarValues.make(
-            [
-                SE3Var(frame_ids).with_value(se3_init),
-                JointVar(frame_ids).with_value(hinges),
-                KpVar(frame_ids).with_value(kp_data),
-            ]
-        ),
+        initial_vals=jaxls.VarValues.make(initial_values),
         return_summary=return_summary,
         **solver_cfg,
     )
@@ -442,39 +472,54 @@ def _build_flat_problem(
     nq = int(mjx_model.nq)
     qpos_default = jp.zeros((nq,))
     site_bodyid = jp.array(mjx_model.site_bodyid)[site_idxs]
-    kp_data_dim = (
-        n_kp_coords + site_offsets.size if dynamic_site_offsets else n_kp_coords
-    )
-    kp_default = jp.zeros((kp_data_dim,))
+    kp_default = jp.zeros((n_kp_coords,))
 
     class QVar(jaxls.Var[jp.ndarray], default_factory=lambda: qpos_default): ...
 
     class KpVar(jaxls.Var[jp.ndarray], default_factory=lambda: kp_default): ...
 
-    frame_ids = jp.arange(n_frames)
-    qpos_vars, kp_vars = QVar(frame_ids), KpVar(frame_ids)
+    OffsetVar = None
+    offset_vars = None
+    if dynamic_site_offsets:
+        offset_default = jp.zeros((site_offsets.size,))
+        class OffsetVar(jaxls.Var[jp.ndarray], default_factory=lambda: offset_default): ...
+        offset_vars = OffsetVar(jp.arange(n_frames))
 
+    qpos_vars, kp_vars = QVar(jp.arange(n_frames)), KpVar(jp.arange(n_frames))
     costs: list[jaxls.Cost] = []
 
-    @jaxls.Cost.factory
-    def marker_cost(vals: jaxls.VarValues, q: QVar, kp: KpVar) -> jp.ndarray:
-        obs = jax.lax.stop_gradient(vals[kp])
-        full_q = jp.where(joint_mask, vals[q], mjx_data.qpos)
-        fk_data = mjx_data.replace(qpos=full_q)
-        fk_data = utils.kinematics(mjx_model, fk_data)
-        fk_data = utils.com_pos(mjx_model, fk_data)
-        if dynamic_site_offsets:
-            offsets = obs[n_kp_coords:].reshape((-1, 3))
-            obs = obs[:n_kp_coords]
-            marker_pos = fk_data.xpos[site_bodyid] + jp.einsum(
-                "kij,kj->ki", fk_data.xmat[site_bodyid], offsets
-            )
-            markers = marker_pos.flatten()
-        else:
-            markers = utils.get_site_xpos(fk_data, site_idxs).flatten()
-        return (obs - markers) * kp_mask
+    if dynamic_site_offsets:
 
-    costs.append(marker_cost(qpos_vars, kp_vars))
+        @jaxls.Cost.factory
+        def marker_cost(
+            vals: jaxls.VarValues, q: QVar, kp: KpVar, offsets: OffsetVar
+        ) -> jp.ndarray:
+            obs = jax.lax.stop_gradient(vals[kp])
+            # Offsets are per-solve data, not optimized state.
+            marker_offsets = jax.lax.stop_gradient(vals[offsets]).reshape((-1, 3))
+            full_q = jp.where(joint_mask, vals[q], mjx_data.qpos)
+            fk_data = mjx_data.replace(qpos=full_q)
+            fk_data = utils.kinematics(mjx_model, fk_data)
+            fk_data = utils.com_pos(mjx_model, fk_data)
+            marker_pos = fk_data.xpos[site_bodyid] + jp.einsum(
+                "kij,kj->ki", fk_data.xmat[site_bodyid], marker_offsets
+            )
+            return (obs - marker_pos.flatten()) * kp_mask
+
+        costs.append(marker_cost(qpos_vars, kp_vars, offset_vars))
+    else:
+
+        @jaxls.Cost.factory
+        def marker_cost(vals: jaxls.VarValues, q: QVar, kp: KpVar) -> jp.ndarray:
+            obs = jax.lax.stop_gradient(vals[kp])
+            full_q = jp.where(joint_mask, vals[q], mjx_data.qpos)
+            fk_data = mjx_data.replace(qpos=full_q)
+            fk_data = utils.kinematics(mjx_model, fk_data)
+            fk_data = utils.com_pos(mjx_model, fk_data)
+            markers = utils.get_site_xpos(fk_data, site_idxs).flatten()
+            return (obs - markers) * kp_mask
+
+        costs.append(marker_cost(qpos_vars, kp_vars))
 
     if jp.any(joint_reg_weights > 0):
 
@@ -506,9 +551,11 @@ def _build_flat_problem(
             )
         )
 
-    analyzed = jaxls.LeastSquaresProblem(
-        costs=costs, variables=[qpos_vars, kp_vars]
-    ).analyze()
+    problem_vars = [qpos_vars, kp_vars]
+    if dynamic_site_offsets:
+        problem_vars.append(offset_vars)
+
+    analyzed = jaxls.LeastSquaresProblem(costs=costs, variables=problem_vars).analyze()
 
     return QOptProblem(
         analyzed=analyzed,
@@ -519,22 +566,25 @@ def _build_flat_problem(
         site_offsets=site_offsets,
         dynamic_site_offsets=dynamic_site_offsets,
         _KpVar=KpVar,
+        _OffsetVar=OffsetVar,
         _QVar=QVar,
     )
 
 
-def _solve_flat(problem, q_init, kp_data, solver_cfg, return_summary):
+def _solve_flat(problem, q_init, kp_data, offset_data, solver_cfg, return_summary):
     n_frames = problem.n_frames
     QVar, KpVar = problem._QVar, problem._KpVar
 
     frame_ids = jp.arange(n_frames)
+    initial_values = [
+        QVar(frame_ids).with_value(q_init),
+        KpVar(frame_ids).with_value(kp_data),
+    ]
+    if problem.dynamic_site_offsets:
+        initial_values.append(problem._OffsetVar(frame_ids).with_value(offset_data))
+
     solve_out = problem.analyzed.solve(
-        initial_vals=jaxls.VarValues.make(
-            [
-                QVar(frame_ids).with_value(q_init),
-                KpVar(frame_ids).with_value(kp_data),
-            ]
-        ),
+        initial_vals=jaxls.VarValues.make(initial_values),
         return_summary=return_summary,
         **solver_cfg,
     )
